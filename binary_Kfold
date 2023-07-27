@@ -1,0 +1,270 @@
+import os
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID" 
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
+import sys
+import numpy as np
+import tensorflow as tf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from keras.models import Sequential, Functional
+from keras.layers import *
+from keras.optimizers import *
+from keras.callbacks import EarlyStopping
+from tensorflow import keras
+import scipy
+from scipy.fft import fft, ifft, fftfreq, fftshift
+from scipy.signal import find_peaks
+import matplotlib.pyplot as plt
+import math
+import pandas as pd
+import seaborn as sns
+from scipy.fftpack import fft, ifft
+import pickle
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import ConfusionMatrixDisplay
+from keras.utils import to_categorical
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import StratifiedKFold, KFold
+from sklearn import metrics
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import precision_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import f1_score
+from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import roc_auc_score
+
+import tempfile
+import preproc
+import models2 as models
+import utilities as ut
+import time
+print(len(tf.config.list_physical_devices('GPU')))
+
+print(time.time)
+######### END PREAMBLE #########
+
+
+# Sampling frequency
+fs = 44100
+
+
+data_proc_path = "C:/Users/PATH_TO_DATA"
+
+# May need to make these directories
+save_data_path = "C:/Users/PATH_TO_Kfold_data/metric_data/"
+save_fig_path = "C:/Users/PATH_TO_Kfold_data/figures/"
+
+### PSD COMPARISON FILE ###
+# 0 - 
+run_number = 0
+t_dur = 3
+nperseg_fct = 3
+f_cutoff = 30
+batch_size = 32
+epochs = 150
+
+model_type = 'GRU'
+model_num = 1
+################################################
+
+bkg1_psd_log = np.load(data_proc_path + 'bkg_psd_log_%inps_subject1_%is_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+bkg2_psd_log = np.load(data_proc_path + 'bkg_psd_log_%inps_subject2_%is_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+
+bkg1_labels = np.load(data_proc_path + 'bkg_psd_labels_%inps_subject1_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+bkg2_labels = np.load(data_proc_path + 'bkg_psd_labels_%inps_subject2_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+
+hum1_psd_log = np.load(data_proc_path + 'hum_psd_log_%inps_subject1_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+hum2_psd_log = np.load(data_proc_path + 'hum_psd_log_%inps_subject2_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+
+hum1_labels = np.load(data_proc_path + 'hum_psd_labels_%inps_subject1_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+hum2_labels = np.load(data_proc_path + 'hum_psd_labels_%inps_subject2_%ss_fc%i.npy' %(nperseg_fct, t_dur, f_cutoff))
+
+
+
+print('Data shapes (Sliced)')
+
+
+min_idx = min(len(bkg1_psd_log), len(bkg2_psd_log))
+
+print('BKG DATA')
+print(np.shape(bkg1_psd_log[:min_idx]), np.shape(bkg1_labels[:min_idx]))
+print(np.shape(bkg2_psd_log[:min_idx]), np.shape(bkg2_labels[:min_idx]))
+
+
+print('HUM DATA')
+print(np.shape(hum1_psd_log[:min_idx]), np.shape(hum1_labels[:min_idx]))
+print(np.shape(hum2_psd_log[:min_idx]), np.shape(hum2_labels[:min_idx]))
+
+hum_tot_labs = []
+
+hum_tot = np.concatenate((hum1_psd_log[:min_idx], hum2_psd_log[:min_idx]))
+
+
+for i in hum_tot:
+    hum_tot_labs.append(int(1))
+
+
+bkg_tot = np.concatenate((bkg1_psd_log[:min_idx], bkg2_psd_log[:min_idx]))
+bkg_tot_labs = np.concatenate((bkg1_labels[:min_idx], bkg2_labels[:min_idx]))
+
+
+
+print('Bkg and Hum Data Tot')
+print('Min/Max of raw bkg and hum data')
+print(np.min(bkg_tot), np.max(bkg_tot))
+print(np.min(hum_tot), np.max(hum_tot))
+
+print('Total shapes')
+print(np.shape(bkg_tot), np.shape(bkg_tot_labs))
+print(np.shape(hum_tot), np.shape(hum_tot_labs))
+
+# Concantenate data into single set
+x_data = np.concatenate((bkg_tot, hum_tot))
+y_data = np.concatenate((bkg_tot_labs, hum_tot_labs))
+print(np.shape(x_data))
+
+print('x_data, y_data shapes')
+print(np.shape(x_data), np.shape(y_data))
+print(y_data[0], y_data[-1])
+
+scaler = MinMaxScaler(feature_range=(-1,1))
+scaler = scaler.fit(x_data)
+x_data = scaler.transform(x_data)
+
+print('X data Min/Max')
+print(np.min(x_data), np.max(x_data))
+
+encoder = LabelEncoder()
+
+encoded_Y = encoder.fit_transform(y_data)
+
+print('Y encoder classes', encoder.classes_)
+
+print('Encoded Y Shape')
+print(np.shape(encoded_Y))
+
+nodes = input_shape[1] #89
+model_name = 'psd_comp_KFold_model%i_bs%i_ep%i_nds%i_%is_fc%i.h5' %(run_number, batch_size, epochs, nodes, t_dur, f_cutoff)
+history_name = 'psd_comp_KFold_history%i_bs%i_ep%i_nds%i_%is_fc%i.npy' %(run_number, batch_size, epochs, nodes, t_dur, f_cutoff)
+model_path = save_data_path + model_name 
+history_path = save_data_path + history_name
+print('Batch size: %i\nEpochs: %i\nNodes: %i' %(batch_size, epochs, nodes))
+
+print('Cross Validation')
+print('Shapes\nX Shape')
+print(np.shape(x_data))
+print('Y')
+print(np.shape(encoded_Y))
+
+num_folds = 10
+
+inputs = x_data
+targets = encoded_Y
+
+kfold = StratifiedKFold(n_splits=num_folds, shuffle=True)
+acc_per_fold = []
+loss_per_fold = []
+fold_no = 1
+acc_list = []
+prc_list = []
+recall_list = []
+f1_list = []
+auc_list = []
+
+for train, test in kfold.split(inputs, targets):
+    input_shape = (inputs[train].shape)
+    model1 = models.GRU_Model1(input_shape=input_shape, nodes=nodes, output_shape=1)
+    print('------------------------------------------------------------------------')
+    print(f'Training for fold {fold_no} ...')
+
+    # Fit data to model
+    history = model1.fit(inputs[train], targets[train],
+                batch_size=batch_size,
+                epochs=epochs,
+                verbose=1)#, validation_data=(inputs[test], targets[test]))#, callbacks=[es])
+
+    # Generate generalization metrics
+    X_test = inputs[test]
+    Y_test = targets[test]
+    scores = model1.evaluate(X_test, Y_test, verbose=0)
+    print(scores)
+    print(f'Score for fold {fold_no}: {model1.metrics_names[0]} of {scores[0]}; {model1.metrics_names[1]} of {scores[1]*100}%')
+    acc_per_fold.append(scores[1] * 100)
+    loss_per_fold.append(scores[0])
+    threshold = 0.5
+    test_pred = model1.predict(X_test)
+    test_pred_th = np.where(test_pred > threshold, int(1), int(0))
+
+
+    matrix = confusion_matrix(Y_test, test_pred_th)
+    print('Matrix')
+    print(matrix)
+
+    fname_wo_ext = os.path.splitext(model_name)[0]
+    # accuracy: (tp + tn) / (p + n)
+    accuracy = accuracy_score(Y_test, test_pred_th)
+    print('Accuracy: %f' % accuracy)
+    # precision tp / (tp + fp)
+    precision = precision_score(Y_test, test_pred_th)
+    print('Precision: %f' % precision)
+    # recall: tp / (tp + fn)
+    recall = recall_score(Y_test, test_pred_th)
+    print('Recall: %f' % recall)
+    # f1: 2 tp / (2 tp + fp + fn)
+    f1 = f1_score(Y_test, test_pred_th)
+    print('F1 score: %f' % f1)
+    # ROC AUC
+    auc = roc_auc_score(Y_test, test_pred)
+    print('ROC AUC: %f' % auc)
+    acc_list.append(accuracy)
+    prc_list.append(precision)
+    recall_list.append(recall)
+    f1_list.append(f1)
+    auc_list.append(auc)
+
+    metric_dict = {'accuracy' : accuracy, 'precision' : precision, 'recall':recall, 'f1':f1, 'auc':auc}
+    df_metric_dict = pd.DataFrame.from_dict(metric_dict, orient='index')
+    print(metric_dict)
+    metric_name = fname_wo_ext + '_metrics_Kfold%i' %fold_no
+    print('Saving metrics...', save_data_path, metric_name)
+    df_metric_dict.to_csv(save_data_path + metric_name + '.csv', index=True)
+    # Increase fold number
+
+    fold_no = fold_no + 1
+
+# == Provide average scores ==
+print('------------------------------------------------------------------------')
+print('Score per fold')
+for i in range(0, len(acc_per_fold)):
+    print('------------------------------------------------------------------------')
+    print(f'> Fold {i+1} - Loss: {loss_per_fold[i]} - Accuracy: {acc_per_fold[i]}%')
+    print('------------------------------------------------------------------------')
+    print('Average scores for all folds:')
+    print(f'> Accuracy: {np.mean(acc_per_fold)} (+- {np.std(acc_per_fold)})')
+    print(f'> Loss: {np.mean(loss_per_fold)}')
+    print('------------------------------------------------------------------------')
+
+print("Model Run: %i\nDone" %run_number)
+
+fold_range = np.arange(1, num_folds+1)
+sns.set_theme(style='whitegrid', font_scale=2, rc={'lines.linewidth': 3}) #palette="Set2",
+colors = ['red', 'yellow', 'lime', 'blue', 'magenta']
+linewid = 3
+avg_wid = 2
+#sns.color_palette("hls", 5)
+plt.figure(figsize=(10, 6))
+plt.plot(fold_range, acc_list, label='Accuracy (Avg: %.3f)' %np.mean(acc_list), color=colors[0])
+plt.plot(fold_range, prc_list, label='Precision (Avg: %.3f)' %np.mean(prc_list), color=colors[1])
+plt.plot(fold_range, recall_list, label='Recall (Avg: %.3f)' %np.mean(recall_list), color=colors[2])
+plt.plot(fold_range, f1_list, label='F1 Scrore (Avg: %.3f)' %np.mean(f1_list), color=colors[3])
+
+plt.ylim(0.35, 1)
+plt.xlim(1, 10)
+plt.xlabel('Fold')
+plt.title('Stratified K-Fold Cross Validation\n%s Binary Model %i' %(model_type, model_num))
+plt.legend(bbox_to_anchor=(1.0, 1))
+img_name = 'bin_KFold_%smodel%i_bs%i_ep%i_fc%i_run%i.png' %(model_type, model_num, batch_size, epochs, f_cutoff, run_number)
+plt.savefig(save_fig_path + img_name, bbox_inches='tight')
+plt.show()
+print("Done")
